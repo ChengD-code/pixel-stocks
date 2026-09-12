@@ -68,3 +68,7 @@ On desktop Chrome: address-bar install icon, or Menu â†’ **Install Pixel Stocksâ
 ## License
 
 Personal / demo use. Finnhub and Yahoo Finance terms apply to their data; proxies have their own limits.
+
+
+## Performance (v3)
+List quotes load **in parallel** (was serial with delays). Finnhub list path fetches **quote only** (no blocking profile/candle). Yahoo list quotes use **1d/5m** payloads; CORS proxy choice is sticky. Detail chart still loads on open; default range is **1D**.

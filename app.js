@@ -39,7 +39,7 @@
   let quotes = {};
   let editing = false;
   let currentSymbol = null;
-  let currentRange = { range: '1mo', interval: '1d', fhRes: 'D', fhSpan: '1mo' };
+  let currentRange = { range: '1d', interval: '5m', fhRes: '5', fhSpan: '1d' };
   let refreshTimer = null;
   let dataSource = 'yahoo'; // 'finnhub' | 'yahoo'
   const profileCache = {};
@@ -155,9 +155,13 @@
     }
   }
 
-  async function fetchViaProxy(url, { timeoutMs = 12000 } = {}) {
+  let preferredProxyIdx = 0;
+
+  async function fetchViaProxy(url, { timeoutMs = 8000 } = {}) {
     let lastErr;
-    for (const make of PROXIES) {
+    const order = [preferredProxyIdx, ...PROXIES.map((_, i) => i).filter((i) => i !== preferredProxyIdx)];
+    for (const idx of order) {
+      const make = PROXIES[idx];
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
@@ -171,6 +175,7 @@
         if (!text || text.trim().startsWith('<')) {
           throw new Error('Proxy returned non-JSON');
         }
+        preferredProxyIdx = idx;
         return JSON.parse(text);
       } catch (e) {
         clearTimeout(t);
@@ -318,24 +323,23 @@
   async function fetchQuoteFinnhub(symbol) {
     const token = getFinnhubKey();
     if (!token) throw new Error('No Finnhub key');
-    const [json, name] = await Promise.all([
-      fetchJsonDirect(FINNHUB_QUOTE(symbol, token)),
-      fetchFinnhubProfile(symbol, token),
-    ]);
+    // Quote only — skip profile + candle here (they serial-blocked the list and candles are often paid).
+    const json = await fetchJsonDirect(FINNHUB_QUOTE(symbol, token), { timeoutMs: 8000 });
+    const name = profileCache[symbol] || symbol;
     const q = parseFinnhubQuote(json, symbol, name);
-    // Sparkline: try short candle; ignore failure
-    try {
-      const { from, to } = spanToUnixRange('5d');
-      const candle = await fetchJsonDirect(FINNHUB_CANDLE(symbol, '60', from, to, token), { timeoutMs: 8000 });
-      const parsed = parseFinnhubCandle(candle, symbol);
-      q.points = parsed.points;
-    } catch (_) {
-      // candles often premium on free — leave empty; UI still works
+    // Resolve display name in background (non-blocking)
+    if (!profileCache[symbol]) {
+      fetchFinnhubProfile(symbol, token).then((n) => {
+        if (n && quotes[symbol]) {
+          quotes[symbol] = { ...quotes[symbol], name: n };
+          renderList();
+        }
+      }).catch(() => {});
     }
     return q;
   }
 
-  async function fetchQuoteYahoo(symbol, range = '5d', interval = '15m') {
+  async function fetchQuoteYahoo(symbol, range = '1d', interval = '5m') {
     const url = YAHOO_CHART(symbol, range, interval);
     const json = await fetchViaProxy(url);
     return parseChartPayload(json, symbol);
@@ -638,26 +642,38 @@
     const yahooFallback = [];
     const next = { ...quotes };
     const token = getFinnhubKey();
-    const delay = token ? 350 : 250; // stay under ~60/min with profile+quote
+    // Parallel quotes (was serial + sleep — main lag). Modest concurrency for proxies / Finnhub free tier.
+    const concurrency = token ? 4 : 3;
+    let rateLimited = false;
 
-    for (let i = 0; i < watchlist.length; i++) {
-      const sym = watchlist[i];
+    async function mapPool(items, limit, fn) {
+      let i = 0;
+      const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (i < items.length && !rateLimited) {
+          const idx = i++;
+          await fn(items[idx], idx);
+        }
+      });
+      await Promise.all(workers);
+    }
+
+    await mapPool(watchlist, concurrency, async (sym) => {
+      if (rateLimited) return;
       try {
         const q = await fetchQuote(sym);
         next[sym] = q;
         quotes = { ...next };
         renderList();
         if (token && q.source === 'yahoo') yahooFallback.push(sym);
-        if (i < watchlist.length - 1) await sleep(delay);
       } catch (e) {
         failed.push(sym);
         console.warn('quote failed', sym, e);
         if (e.code === 429) {
+          rateLimited = true;
           showBanner(e.message, 'error');
-          break;
         }
       }
-    }
+    });
 
     quotes = next;
     saveDiskCache(quotes);

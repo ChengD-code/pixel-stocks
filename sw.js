@@ -1,5 +1,5 @@
 /* Pixel Stocks service worker — offline shell + short-lived quote cache */
-const CACHE_NAME = 'pixel-stocks-v2';
+const CACHE_NAME = 'pixel-stocks-v3';
 const SHELL = [
   './',
   './index.html',
