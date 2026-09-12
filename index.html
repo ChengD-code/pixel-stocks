@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Stocks" />
+  <meta name="description" content="Pixel Stocks — simple Apple Stocks–style watchlist PWA" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <title>Stocks</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Watchlist view -->
+  <section id="list-view" class="view active" aria-label="Watchlist">
+    <header class="app-header">
+      <div class="header-row">
+        <h1>Stocks</h1>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button type="button" class="edit-toggle" id="edit-btn" aria-label="Edit watchlist">Edit</button>
+          <button type="button" class="icon-btn" id="add-btn" aria-label="Add ticker">+</button>
+        </div>
+      </div>
+      <div class="header-meta">
+        <span class="badge" id="delay-badge">Delayed</span>
+        <span id="updated-at">Updating…</span>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" role="status"></div>
+
+    <ul id="watchlist" class="watchlist" aria-live="polite"></ul>
+  </section>
+
+  <!-- Detail view -->
+  <section id="detail-view" class="view" aria-label="Stock detail">
+    <div class="detail-header">
+      <button type="button" class="back-btn" id="back-btn">‹ Stocks</button>
+      <div class="detail-actions">
+        <button type="button" class="remove-btn" id="remove-btn">Remove</button>
+      </div>
+    </div>
+    <div class="detail-hero">
+      <div class="detail-symbol" id="d-symbol">—</div>
+      <div class="detail-name" id="d-name"></div>
+      <div class="detail-price" id="d-price">—</div>
+      <div class="detail-change flat" id="d-change">—</div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="chart" width="400" height="220" aria-label="Price chart"></canvas>
+      <div id="chart-status" class="chart-loading">Loading chart…</div>
+    </div>
+    <div class="range-tabs" id="range-tabs" role="tablist">
+      <button type="button" class="range-tab" data-range="1d" data-interval="5m">1D</button>
+      <button type="button" class="range-tab" data-range="5d" data-interval="15m">5D</button>
+      <button type="button" class="range-tab active" data-range="1mo" data-interval="1d">1M</button>
+      <button type="button" class="range-tab" data-range="3mo" data-interval="1d">3M</button>
+      <button type="button" class="range-tab" data-range="1y" data-interval="1wk">1Y</button>
+    </div>
+    <div class="detail-stats" id="detail-stats"></div>
+    <p class="detail-footer">
+      Quotes via Yahoo Finance (unofficial chart API), proxied for browser access.
+      Prices are typically delayed ~15 minutes — not live, not advice.
+    </p>
+  </section>
+
+  <!-- Add ticker sheet -->
+  <div id="add-overlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="add-title">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2 id="add-title">Add Symbol</h2>
+      <form class="sheet-form" id="add-form">
+        <input type="text" id="symbol-input" placeholder="e.g. AAPL" maxlength="10" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+        <button type="submit" id="add-submit">Add</button>
+      </form>
+      <p class="sheet-hint">Enter a US ticker symbol. Data from Yahoo Finance (delayed).</p>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
