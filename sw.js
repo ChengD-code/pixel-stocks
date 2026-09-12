@@ -1,10 +1,12 @@
-/* Pixel Stocks service worker — offline shell + short-lived quote cache */
-const CACHE_NAME = 'pixel-stocks-v3';
+/* Pixel Stocks service worker — network-first shell so chart defaults update */
+const CACHE_NAME = 'pixel-stocks-v4';
 const SHELL = [
   './',
   './index.html',
   './styles.css',
+  './styles.css?v=4',
   './app.js',
+  './app.js?v=4',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png'
@@ -33,14 +35,13 @@ self.addEventListener('fetch', (event) => {
     url.hostname.includes('yahoo') ||
     url.pathname.includes('finance');
 
-  // Network-first for market APIs; do not poison cache with Finnhub URLs that embed the API key
   if (isApi) {
     event.respondWith(
       fetch(event.request)
         .then((res) => {
           if (!url.hostname.includes('finnhub.io')) {
             const clone = res.clone();
-            caches.open(CACHE_NAME).then((c) => c.put(event.request, clone));
+            caches.open(CACHE_NAME).then((c) => c.put(event.request, clone)).catch(() => {});
           }
           return res;
         })
@@ -48,7 +49,19 @@ self.addEventListener('fetch', (event) => {
     );
     return;
   }
+
+  // Network-first for app shell (fixes stuck old 1M default from cache-first SW)
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request)
+      .then((res) => {
+        const clone = res.clone();
+        caches.open(CACHE_NAME).then((c) => c.put(event.request, clone)).catch(() => {});
+        return res;
+      })
+      .catch(() => caches.match(event.request).then((c) => c || caches.match('./index.html')))
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
 });

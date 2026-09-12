@@ -11,6 +11,11 @@
   const CACHE_KEY = 'pixel-stocks-quote-cache';
   const FINNHUB_KEY_STORAGE = 'pixel-stocks-finnhub-key';
   const CACHE_TTL_MS = 45_000;
+  const RANGE_PREF_KEY = 'pixel-stocks-chart-range';
+  const RANGE_MIGRATE_KEY = 'pixel-stocks-chart-range-v';
+  const RANGE_MIGRATE_VER = 4;
+  const DEFAULT_RANGE = { range: '1d', interval: '5m', fhRes: '5', fhSpan: '1d' };
+  const BUILD_ID = 'v4-1d-default';
   const REFRESH_MS_FINNHUB = 45_000;
   const REFRESH_MS_YAHOO = 90_000;
 
@@ -39,7 +44,7 @@
   let quotes = {};
   let editing = false;
   let currentSymbol = null;
-  let currentRange = { range: '1d', interval: '5m', fhRes: '5', fhSpan: '1d' };
+  let currentRange = { ...DEFAULT_RANGE };
   let refreshTimer = null;
   let dataSource = 'yahoo'; // 'finnhub' | 'yahoo'
   const profileCache = {};
@@ -370,8 +375,8 @@
     const token = getFinnhubKey();
     if (token) {
       try {
-        const { from, to } = spanToUnixRange(rangeCfg.fhSpan || '1mo');
-        const res = rangeCfg.fhRes || 'D';
+        const { from, to } = spanToUnixRange(rangeCfg.fhSpan || '1d');
+        const res = rangeCfg.fhRes || '5';
         const json = await fetchJsonDirect(FINNHUB_CANDLE(symbol, res, from, to, token));
         const candle = parseFinnhubCandle(json, symbol);
         // Merge with latest quote stats if we have them
@@ -707,6 +712,44 @@
     return new Promise((r) => setTimeout(r, ms));
   }
 
+
+  function applyRangeTabs(rangeCfg) {
+    const tabs = $('range-tabs');
+    if (!tabs) return;
+    tabs.querySelectorAll('.range-tab').forEach((t) => {
+      const on = t.dataset.range === rangeCfg.range;
+      t.classList.toggle('active', on);
+    });
+  }
+
+  function saveRangePref(rangeCfg) {
+    try {
+      localStorage.setItem(RANGE_PREF_KEY, JSON.stringify(rangeCfg));
+      localStorage.setItem(RANGE_MIGRATE_KEY, String(RANGE_MIGRATE_VER));
+    } catch (_) { /* ignore */ }
+  }
+
+  function loadRangePref() {
+    try {
+      const ver = Number(localStorage.getItem(RANGE_MIGRATE_KEY) || '0');
+      // Migrate: old installs / pre-v4 / previous app default of 1mo → force 1D
+      if (ver < RANGE_MIGRATE_VER) {
+        localStorage.removeItem(RANGE_PREF_KEY);
+        localStorage.setItem(RANGE_MIGRATE_KEY, String(RANGE_MIGRATE_VER));
+        return { ...DEFAULT_RANGE };
+      }
+      const raw = localStorage.getItem(RANGE_PREF_KEY);
+      if (!raw) return { ...DEFAULT_RANGE };
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.range === '1mo') {
+        // Treat legacy month default as stale
+        return { ...DEFAULT_RANGE };
+      }
+      if (parsed.range && parsed.interval) return parsed;
+    } catch (_) { /* ignore */ }
+    return { ...DEFAULT_RANGE };
+  }
+
   async function loadDetailChart() {
     if (!currentSymbol) return;
     chartStatus.style.display = 'flex';
@@ -744,6 +787,9 @@
     currentSymbol = symbol;
     listView.classList.remove('active');
     detailView.classList.add('active');
+    // Always open on the resolved default/pref (1D after migrate) — sync tabs before fetch
+    currentRange = loadRangePref();
+    applyRangeTabs(currentRange);
     renderDetailHero(quotes[symbol] || { symbol });
     loadDetailChart();
   }
@@ -891,6 +937,7 @@
       fhRes: tab.dataset.fhRes,
       fhSpan: tab.dataset.fhSpan,
     };
+    saveRangePref(currentRange);
     loadDetailChart();
   });
 
@@ -905,11 +952,25 @@
   // —— PWA ——
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('SW failed', e));
+      navigator.serviceWorker.register('./sw.js?v=4').then((reg) => {
+        reg.update().catch(() => {});
+        if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      }).catch((e) => console.warn('SW failed', e));
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        // New SW claimed — one reload to pick up shell (avoid loops)
+        if (!sessionStorage.getItem('pixel-stocks-reloaded-v4')) {
+          sessionStorage.setItem('pixel-stocks-reloaded-v4', '1');
+          location.reload();
+        }
+      });
     });
   }
 
   // —— Boot ——
+  currentRange = loadRangePref();
+  applyRangeTabs(currentRange);
+  saveRangePref(currentRange); // persist migrated 1D
+  console.info('Pixel Stocks', BUILD_ID, currentRange);
   updateSourceBadge();
   renderList();
   refreshQuotes({ force: true });
