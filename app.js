@@ -1,7 +1,7 @@
 /**
- * Pixel Stocks — Apple Stocks–style PWA
- * Data: Yahoo Finance chart API via AllOrigins CORS proxy (free, no key).
- * Quotes are typically delayed ~15 min.
+ * Pixel Stocks — Apple Stocks–style PWA (light theme)
+ * Primary: Finnhub free quote API when user pastes a key (localStorage only).
+ * Fallback: Yahoo Finance chart API via CORS proxies (best-effort / may be delayed).
  */
 (() => {
   'use strict';
@@ -9,14 +9,26 @@
   const DEFAULT_TICKERS = ['TSLA', 'SPCX', 'AMZN', 'OPEN', 'SOFI', 'CLOV'];
   const STORAGE_KEY = 'pixel-stocks-watchlist';
   const CACHE_KEY = 'pixel-stocks-quote-cache';
-  const CACHE_TTL_MS = 60_000; // prefer fresh; fall back to cache on errors
-  const REFRESH_MS = 90_000;
+  const FINNHUB_KEY_STORAGE = 'pixel-stocks-finnhub-key';
+  const CACHE_TTL_MS = 45_000;
+  const REFRESH_MS_FINNHUB = 45_000;
+  const REFRESH_MS_YAHOO = 90_000;
 
-  // Yahoo Finance unofficial chart endpoint (no API key)
+  const LABEL_FINNHUB = 'Near real-time (Finnhub)';
+  const LABEL_YAHOO = 'Yahoo (best-effort / may be delayed)';
+
   const YAHOO_CHART = (symbol, range, interval) =>
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=false`;
 
-  // Free CORS proxies (tried in order). Documented in README.
+  const FINNHUB_QUOTE = (symbol, token) =>
+    `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(token)}`;
+
+  const FINNHUB_CANDLE = (symbol, resolution, from, to, token) =>
+    `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=${encodeURIComponent(resolution)}&from=${from}&to=${to}&token=${encodeURIComponent(token)}`;
+
+  const FINNHUB_PROFILE = (symbol, token) =>
+    `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(token)}`;
+
   const PROXIES = [
     (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
     (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
@@ -24,11 +36,13 @@
 
   // —— State ——
   let watchlist = loadWatchlist();
-  let quotes = {}; // symbol -> quote object
+  let quotes = {};
   let editing = false;
   let currentSymbol = null;
-  let currentRange = { range: '1mo', interval: '1d' };
+  let currentRange = { range: '1mo', interval: '1d', fhRes: 'D', fhSpan: '1mo' };
   let refreshTimer = null;
+  let dataSource = 'yahoo'; // 'finnhub' | 'yahoo'
+  const profileCache = {};
 
   // —— DOM ——
   const $ = (id) => document.getElementById(id);
@@ -39,9 +53,12 @@
   const listView = $('list-view');
   const detailView = $('detail-view');
   const overlay = $('add-overlay');
+  const settingsOverlay = $('settings-overlay');
   const symbolInput = $('symbol-input');
   const chartCanvas = $('chart');
   const chartStatus = $('chart-status');
+  const finnhubKeyInput = $('finnhub-key');
+  const settingsStatus = $('settings-status');
 
   // —— Storage ——
   function loadWatchlist() {
@@ -61,6 +78,20 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(watchlist));
   }
 
+  function getFinnhubKey() {
+    try {
+      return (localStorage.getItem(FINNHUB_KEY_STORAGE) || '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function setFinnhubKey(key) {
+    const k = (key || '').trim();
+    if (k) localStorage.setItem(FINNHUB_KEY_STORAGE, k);
+    else localStorage.removeItem(FINNHUB_KEY_STORAGE);
+  }
+
   function loadDiskCache() {
     try {
       const raw = localStorage.getItem(CACHE_KEY);
@@ -77,7 +108,53 @@
     } catch (_) { /* quota */ }
   }
 
+  function updateSourceBadge() {
+    const key = getFinnhubKey();
+    dataSource = key ? 'finnhub' : 'yahoo';
+    delayBadge.textContent = key ? LABEL_FINNHUB : LABEL_YAHOO;
+    delayBadge.className = `badge ${key ? 'live' : 'delayed'}`;
+    const footer = $('detail-footer');
+    if (footer) {
+      footer.textContent = key
+        ? 'Quotes: Finnhub (near real-time for US stocks on free tier). Charts: Finnhub candles when available, else Yahoo. Not financial advice.'
+        : 'Quotes & charts: Yahoo Finance via CORS proxy (best-effort / may be delayed). Add a free Finnhub key in Settings for fresher US quotes. Not financial advice.';
+    }
+  }
+
+  function scheduleRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    const ms = getFinnhubKey() ? REFRESH_MS_FINNHUB : REFRESH_MS_YAHOO;
+    refreshTimer = setInterval(() => refreshQuotes(), ms);
+  }
+
   // —— Networking ——
+  async function fetchJsonDirect(url, { timeoutMs = 12000 } = {}) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        signal: ctrl.signal,
+        headers: { Accept: 'application/json' },
+      });
+      clearTimeout(t);
+      if (res.status === 429) {
+        const err = new Error('Rate limited (429). Wait a minute and try again.');
+        err.code = 429;
+        throw err;
+      }
+      if (res.status === 401 || res.status === 403) {
+        const err = new Error('Finnhub key rejected or endpoint not on free plan.');
+        err.code = res.status;
+        throw err;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (e) {
+      clearTimeout(t);
+      throw e;
+    }
+  }
+
   async function fetchViaProxy(url, { timeoutMs = 12000 } = {}) {
     let lastErr;
     for (const make of PROXIES) {
@@ -129,7 +206,6 @@
       changePct = (change / prev) * 100;
     }
 
-    // Prefer last two closes for sparkline day change if meta incomplete
     if ((changePct == null || Number.isNaN(changePct)) && points.length >= 2) {
       const a = points[points.length - 2].c;
       const b = points[points.length - 1].c;
@@ -148,23 +224,160 @@
       exchange: meta.exchangeName || meta.fullExchangeName || '',
       marketState: meta.marketState || '',
       points,
+      open: meta.regularMarketOpen ?? null,
       high: meta.regularMarketDayHigh ?? null,
       low: meta.regularMarketDayLow ?? null,
       volume: meta.regularMarketVolume ?? null,
       fiftyTwoHigh: meta.fiftyTwoWeekHigh ?? null,
       fiftyTwoLow: meta.fiftyTwoWeekLow ?? null,
+      source: 'yahoo',
       fetchedAt: Date.now(),
     };
   }
 
-  async function fetchQuote(symbol, range = '5d', interval = '15m') {
+  function parseFinnhubQuote(json, symbol, name) {
+    if (!json || typeof json.c !== 'number' || json.c === 0 && json.t === 0) {
+      throw new Error('No quote data (invalid symbol or unsupported ticker)');
+    }
+    const price = Number(json.c);
+    const prev = json.pc != null ? Number(json.pc) : null;
+    const change = json.d != null ? Number(json.d) : (prev != null ? price - prev : null);
+    const changePct = json.dp != null ? Number(json.dp) : (prev ? (change / prev) * 100 : null);
+    return {
+      symbol: String(symbol).toUpperCase(),
+      name: name || symbol,
+      price,
+      prevClose: prev,
+      change,
+      changePct,
+      currency: 'USD',
+      exchange: '',
+      marketState: '',
+      points: [],
+      open: json.o != null ? Number(json.o) : null,
+      high: json.h != null ? Number(json.h) : null,
+      low: json.l != null ? Number(json.l) : null,
+      volume: null,
+      fiftyTwoHigh: null,
+      fiftyTwoLow: null,
+      source: 'finnhub',
+      fetchedAt: Date.now(),
+    };
+  }
+
+  function parseFinnhubCandle(json, symbol) {
+    if (!json || json.s === 'no_data') {
+      throw new Error('No candle data');
+    }
+    if (json.s !== 'ok' || !Array.isArray(json.c) || !json.c.length) {
+      throw new Error(json.error || 'Candle unavailable on free plan');
+    }
+    const points = [];
+    for (let i = 0; i < json.c.length; i++) {
+      const c = json.c[i];
+      const t = json.t?.[i];
+      if (c == null || t == null || Number.isNaN(c)) continue;
+      points.push({ t: t * 1000, c: Number(c) });
+    }
+    if (!points.length) throw new Error('Empty candle series');
+    return {
+      symbol: String(symbol).toUpperCase(),
+      points,
+      source: 'finnhub',
+      fetchedAt: Date.now(),
+    };
+  }
+
+  function spanToUnixRange(span) {
+    const to = Math.floor(Date.now() / 1000);
+    const day = 86400;
+    let from = to - 30 * day;
+    switch (span) {
+      case '1d': from = to - 1 * day; break;
+      case '5d': from = to - 5 * day; break;
+      case '1mo': from = to - 31 * day; break;
+      case '3mo': from = to - 93 * day; break;
+      case '1y': from = to - 365 * day; break;
+      default: break;
+    }
+    return { from, to };
+  }
+
+  async function fetchFinnhubProfile(symbol, token) {
+    if (profileCache[symbol]) return profileCache[symbol];
+    try {
+      const json = await fetchJsonDirect(FINNHUB_PROFILE(symbol, token), { timeoutMs: 8000 });
+      const name = json?.name || json?.ticker || symbol;
+      profileCache[symbol] = name;
+      return name;
+    } catch (_) {
+      return symbol;
+    }
+  }
+
+  async function fetchQuoteFinnhub(symbol) {
+    const token = getFinnhubKey();
+    if (!token) throw new Error('No Finnhub key');
+    const [json, name] = await Promise.all([
+      fetchJsonDirect(FINNHUB_QUOTE(symbol, token)),
+      fetchFinnhubProfile(symbol, token),
+    ]);
+    const q = parseFinnhubQuote(json, symbol, name);
+    // Sparkline: try short candle; ignore failure
+    try {
+      const { from, to } = spanToUnixRange('5d');
+      const candle = await fetchJsonDirect(FINNHUB_CANDLE(symbol, '60', from, to, token), { timeoutMs: 8000 });
+      const parsed = parseFinnhubCandle(candle, symbol);
+      q.points = parsed.points;
+    } catch (_) {
+      // candles often premium on free — leave empty; UI still works
+    }
+    return q;
+  }
+
+  async function fetchQuoteYahoo(symbol, range = '5d', interval = '15m') {
     const url = YAHOO_CHART(symbol, range, interval);
     const json = await fetchViaProxy(url);
     return parseChartPayload(json, symbol);
   }
 
-  async function fetchChart(symbol, range, interval) {
-    const url = YAHOO_CHART(symbol, range, interval);
+  async function fetchQuote(symbol) {
+    const token = getFinnhubKey();
+    if (token) {
+      try {
+        return await fetchQuoteFinnhub(symbol);
+      } catch (e) {
+        if (e.code === 429) throw e;
+        // Fall back to Yahoo for this symbol (e.g. SPCX missing on Finnhub)
+        console.warn('Finnhub quote failed, trying Yahoo', symbol, e);
+        try {
+          const q = await fetchQuoteYahoo(symbol);
+          q.note = `Finnhub miss → Yahoo: ${e.message}`;
+          return q;
+        } catch (e2) {
+          throw e; // prefer original Finnhub error message
+        }
+      }
+    }
+    return fetchQuoteYahoo(symbol);
+  }
+
+  async function fetchChart(symbol, rangeCfg) {
+    const token = getFinnhubKey();
+    if (token) {
+      try {
+        const { from, to } = spanToUnixRange(rangeCfg.fhSpan || '1mo');
+        const res = rangeCfg.fhRes || 'D';
+        const json = await fetchJsonDirect(FINNHUB_CANDLE(symbol, res, from, to, token));
+        const candle = parseFinnhubCandle(json, symbol);
+        // Merge with latest quote stats if we have them
+        const base = quotes[symbol] ? { ...quotes[symbol] } : { symbol };
+        return { ...base, points: candle.points, source: 'finnhub', fetchedAt: Date.now() };
+      } catch (e) {
+        console.warn('Finnhub candle failed, Yahoo chart fallback', e);
+      }
+    }
+    const url = YAHOO_CHART(symbol, rangeCfg.range, rangeCfg.interval);
     const json = await fetchViaProxy(url);
     return parseChartPayload(json, symbol);
   }
@@ -226,7 +439,7 @@
       max += 1;
     }
     const pad = 2;
-    const color = up ? '#30d158' : '#ff453a';
+    const color = up ? '#34c759' : '#ff3b30';
 
     ctx.beginPath();
     ctx.strokeStyle = color;
@@ -242,7 +455,7 @@
     ctx.stroke();
   }
 
-  // —— Main chart ——
+  // —— Main chart (light background) ——
   function drawChart(points, up) {
     const canvas = chartCanvas;
     const dpr = window.devicePixelRatio || 1;
@@ -275,14 +488,13 @@
     const right = 8;
     const top = 12;
     const bottom = 20;
-    const color = up ? '#30d158' : '#ff453a';
-    const fill = up ? 'rgba(48,209,88,0.12)' : 'rgba(255,69,58,0.12)';
+    const color = up ? '#34c759' : '#ff3b30';
+    const fill = up ? 'rgba(52,199,89,0.14)' : 'rgba(255,59,48,0.12)';
 
-    // baseline at first price
     const base = vals[0];
     const baseY = top + (1 - (base - min) / (max - min)) * (h - top - bottom);
     ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = '#48484a';
+    ctx.strokeStyle = '#d1d1d6';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(left, baseY);
@@ -290,7 +502,6 @@
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // area
     ctx.beginPath();
     vals.forEach((v, i) => {
       const x = left + (i / (vals.length - 1 || 1)) * (w - left - right);
@@ -305,7 +516,6 @@
     ctx.fillStyle = fill;
     ctx.fill();
 
-    // line
     ctx.beginPath();
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
@@ -318,7 +528,6 @@
     });
     ctx.stroke();
 
-    // end dot
     const last = vals[vals.length - 1];
     const lx = left + (w - left - right);
     const ly = top + (1 - (last - min) / (max - min)) * (h - top - bottom);
@@ -369,7 +578,6 @@
       })
       .join('');
 
-    // sparklines
     watchlist.forEach((sym) => {
       const q = quotes[sym];
       if (!q?.points?.length) return;
@@ -412,14 +620,14 @@
       return;
     }
 
-    // hydrate from disk cache immediately
+    updateSourceBadge();
+
     const disk = loadDiskCache();
     if (disk?.data) {
       Object.assign(quotes, disk.data);
       renderList();
-      const age = Date.now() - (disk.at || 0);
       updatedEl.textContent = `Cached ${timeAgo(disk.at)}`;
-      if (!force && age < CACHE_TTL_MS) {
+      if (!force && Date.now() - (disk.at || 0) < CACHE_TTL_MS) {
         // still refresh in background
       }
     }
@@ -427,9 +635,11 @@
     showBanner('');
     updatedEl.textContent = 'Updating…';
     const failed = [];
+    const yahooFallback = [];
     const next = { ...quotes };
+    const token = getFinnhubKey();
+    const delay = token ? 350 : 250; // stay under ~60/min with profile+quote
 
-    // sequential with small delay to be gentle on free proxies
     for (let i = 0; i < watchlist.length; i++) {
       const sym = watchlist[i];
       try {
@@ -437,30 +647,42 @@
         next[sym] = q;
         quotes = { ...next };
         renderList();
-        if (i < watchlist.length - 1) await sleep(250);
+        if (token && q.source === 'yahoo') yahooFallback.push(sym);
+        if (i < watchlist.length - 1) await sleep(delay);
       } catch (e) {
         failed.push(sym);
         console.warn('quote failed', sym, e);
+        if (e.code === 429) {
+          showBanner(e.message, 'error');
+          break;
+        }
       }
     }
 
     quotes = next;
     saveDiskCache(quotes);
     renderList();
+    updateSourceBadge();
 
     const latest = Math.max(0, ...Object.values(quotes).map((q) => q.fetchedAt || 0));
     updatedEl.textContent = latest ? `Updated ${timeAgo(latest)}` : 'Update failed';
-    delayBadge.textContent = 'Delayed ~15m';
 
     if (failed.length === watchlist.length) {
       showBanner(
-        'Could not reach market data (CORS proxy or Yahoo rate limit). Showing cached prices if available. Try again in a minute.',
+        token
+          ? 'Could not reach Finnhub (rate limit, bad key, or network). Cached prices shown if available.'
+          : 'Could not reach market data (CORS proxy or Yahoo rate limit). Showing cached prices if available. Try again in a minute.',
         'error'
       );
     } else if (failed.length) {
       showBanner(
-        `No data for: ${failed.join(', ')}. Symbol may be invalid, delisted, or temporarily blocked.`,
+        `No data for: ${failed.join(', ')}. Symbol may be invalid, delisted, or unsupported on the current source.`,
         'warn'
+      );
+    } else if (yahooFallback.length) {
+      showBanner(
+        `Finnhub had no quote for ${yahooFallback.join(', ')}; used Yahoo (may be delayed) for those.`,
+        'info'
       );
     }
   }
@@ -476,11 +698,10 @@
     chartStatus.textContent = 'Loading chart…';
 
     try {
-      const q = await fetchChart(currentSymbol, currentRange.range, currentRange.interval);
+      const q = await fetchChart(currentSymbol, currentRange);
       quotes[currentSymbol] = { ...quotes[currentSymbol], ...q, points: q.points };
       renderDetailHero(quotes[currentSymbol]);
       const up = dirClass(q.changePct) !== 'down';
-      // For range charts, color by last vs first
       const seriesUp =
         q.points.length >= 2 ? q.points[q.points.length - 1].c >= q.points[0].c : up;
       drawChart(q.points, seriesUp);
@@ -489,7 +710,6 @@
       chartStatus.className = 'chart-error';
       chartStatus.textContent = e.message || 'Chart unavailable';
       chartStatus.style.display = 'flex';
-      // try cached points
       const cached = quotes[currentSymbol];
       if (cached?.points?.length) {
         drawChart(cached.points, dirClass(cached.changePct) !== 'down');
@@ -558,6 +778,63 @@
     if (e.target === overlay) overlay.classList.remove('open');
   });
 
+  $('settings-btn').addEventListener('click', () => {
+    finnhubKeyInput.value = getFinnhubKey();
+    settingsStatus.textContent = getFinnhubKey()
+      ? 'Key saved in this browser (localStorage).'
+      : 'No key — using Yahoo fallback.';
+    settingsStatus.className = 'sheet-status';
+    settingsOverlay.classList.add('open');
+    setTimeout(() => finnhubKeyInput.focus(), 100);
+  });
+
+  settingsOverlay.addEventListener('click', (e) => {
+    if (e.target === settingsOverlay) settingsOverlay.classList.remove('open');
+  });
+
+  $('save-key-btn').addEventListener('click', () => {
+    const key = finnhubKeyInput.value.trim();
+    setFinnhubKey(key);
+    updateSourceBadge();
+    scheduleRefresh();
+    settingsStatus.textContent = key
+      ? 'Saved. Refreshing with Finnhub…'
+      : 'Cleared. Using Yahoo fallback.';
+    settingsStatus.className = 'sheet-status ok';
+    settingsOverlay.classList.remove('open');
+    refreshQuotes({ force: true });
+  });
+
+  $('clear-key-btn').addEventListener('click', () => {
+    finnhubKeyInput.value = '';
+    setFinnhubKey('');
+    updateSourceBadge();
+    scheduleRefresh();
+    settingsStatus.textContent = 'Key cleared. Using Yahoo (may be delayed).';
+    settingsStatus.className = 'sheet-status';
+    refreshQuotes({ force: true });
+  });
+
+  $('test-key-btn').addEventListener('click', async () => {
+    const key = finnhubKeyInput.value.trim() || getFinnhubKey();
+    if (!key) {
+      settingsStatus.textContent = 'Paste a key first.';
+      settingsStatus.className = 'sheet-status err';
+      return;
+    }
+    settingsStatus.textContent = 'Testing…';
+    settingsStatus.className = 'sheet-status';
+    try {
+      const json = await fetchJsonDirect(FINNHUB_QUOTE('AAPL', key), { timeoutMs: 10000 });
+      if (typeof json.c !== 'number') throw new Error('Unexpected response');
+      settingsStatus.textContent = `OK — AAPL ≈ ${fmtPrice(json.c)} (near real-time on free US quotes).`;
+      settingsStatus.className = 'sheet-status ok';
+    } catch (e) {
+      settingsStatus.textContent = e.message || 'Test failed';
+      settingsStatus.className = 'sheet-status err';
+    }
+  });
+
   $('add-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const sym = symbolInput.value.trim().toUpperCase().replace(/[^A-Z0-9.-]/g, '');
@@ -581,7 +858,6 @@
       showBanner('');
     } catch (err) {
       showBanner(`Could not add ${sym}: ${err.message || 'not found / rate limited'}`, 'error');
-      // still allow add if user insists? No — validate against Yahoo.
     } finally {
       btn.disabled = false;
       btn.textContent = 'Add';
@@ -593,7 +869,12 @@
     if (!tab) return;
     $('range-tabs').querySelectorAll('.range-tab').forEach((t) => t.classList.remove('active'));
     tab.classList.add('active');
-    currentRange = { range: tab.dataset.range, interval: tab.dataset.interval };
+    currentRange = {
+      range: tab.dataset.range,
+      interval: tab.dataset.interval,
+      fhRes: tab.dataset.fhRes,
+      fhSpan: tab.dataset.fhSpan,
+    };
     loadDetailChart();
   });
 
@@ -613,9 +894,10 @@
   }
 
   // —— Boot ——
+  updateSourceBadge();
   renderList();
   refreshQuotes({ force: true });
-  refreshTimer = setInterval(() => refreshQuotes(), REFRESH_MS);
+  scheduleRefresh();
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') refreshQuotes();

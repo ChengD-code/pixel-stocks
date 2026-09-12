@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#000000" />
+  <meta name="theme-color" content="#ffffff" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Stocks" />
   <meta name="description" content="Pixel Stocks — simple Apple Stocks–style watchlist PWA" />
   <link rel="manifest" href="manifest.json" />
@@ -20,13 +20,14 @@
     <header class="app-header">
       <div class="header-row">
         <h1>Stocks</h1>
-        <div style="display:flex;gap:8px;align-items:center">
+        <div class="header-actions">
           <button type="button" class="edit-toggle" id="edit-btn" aria-label="Edit watchlist">Edit</button>
+          <button type="button" class="icon-btn gear-btn" id="settings-btn" aria-label="Settings">⚙</button>
           <button type="button" class="icon-btn" id="add-btn" aria-label="Add ticker">+</button>
         </div>
       </div>
       <div class="header-meta">
-        <span class="badge" id="delay-badge">Delayed</span>
+        <span class="badge delayed" id="delay-badge">Yahoo (best-effort / may be delayed)</span>
         <span id="updated-at">Updating…</span>
       </div>
     </header>
@@ -55,16 +56,15 @@
       <div id="chart-status" class="chart-loading">Loading chart…</div>
     </div>
     <div class="range-tabs" id="range-tabs" role="tablist">
-      <button type="button" class="range-tab" data-range="1d" data-interval="5m">1D</button>
-      <button type="button" class="range-tab" data-range="5d" data-interval="15m">5D</button>
-      <button type="button" class="range-tab active" data-range="1mo" data-interval="1d">1M</button>
-      <button type="button" class="range-tab" data-range="3mo" data-interval="1d">3M</button>
-      <button type="button" class="range-tab" data-range="1y" data-interval="1wk">1Y</button>
+      <button type="button" class="range-tab" data-range="1d" data-interval="5m" data-fh-res="5" data-fh-span="1d">1D</button>
+      <button type="button" class="range-tab" data-range="5d" data-interval="15m" data-fh-res="15" data-fh-span="5d">5D</button>
+      <button type="button" class="range-tab active" data-range="1mo" data-interval="1d" data-fh-res="D" data-fh-span="1mo">1M</button>
+      <button type="button" class="range-tab" data-range="3mo" data-interval="1d" data-fh-res="D" data-fh-span="3mo">3M</button>
+      <button type="button" class="range-tab" data-range="1y" data-interval="1wk" data-fh-res="W" data-fh-span="1y">1Y</button>
     </div>
     <div class="detail-stats" id="detail-stats"></div>
-    <p class="detail-footer">
-      Quotes via Yahoo Finance (unofficial chart API), proxied for browser access.
-      Prices are typically delayed ~15 minutes — not live, not advice.
+    <p class="detail-footer" id="detail-footer">
+      Add a free Finnhub API key in Settings for near real-time US quotes. Without a key, Yahoo Finance (best-effort / may be delayed) is used. Not financial advice.
     </p>
   </section>
 
@@ -77,7 +77,30 @@
         <input type="text" id="symbol-input" placeholder="e.g. AAPL" maxlength="10" autocomplete="off" autocapitalize="characters" spellcheck="false" />
         <button type="submit" id="add-submit">Add</button>
       </form>
-      <p class="sheet-hint">Enter a US ticker symbol. Data from Yahoo Finance (delayed).</p>
+      <p class="sheet-hint">Enter a US ticker symbol. Quotes use Finnhub when a key is set, otherwise Yahoo (may be delayed).</p>
+    </div>
+  </div>
+
+  <!-- Settings sheet -->
+  <div id="settings-overlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h2 id="settings-title">Settings</h2>
+      <div class="sheet-field">
+        <label for="finnhub-key">Finnhub API key (optional)</label>
+        <input type="password" id="finnhub-key" placeholder="Paste free API key" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="sheet-actions">
+        <button type="button" class="primary" id="save-key-btn">Save</button>
+        <button type="button" class="secondary" id="test-key-btn">Test</button>
+        <button type="button" class="danger" id="clear-key-btn">Clear</button>
+      </div>
+      <p class="sheet-status" id="settings-status"></p>
+      <p class="sheet-hint">
+        Get a free key at <a href="https://finnhub.io/register" target="_blank" rel="noopener noreferrer">finnhub.io/register</a>.
+        Stored only in this browser’s localStorage — never uploaded or committed.
+        Free tier: near real-time US quotes (~60 calls/min). Candle history may be limited; charts fall back to Yahoo if needed.
+      </p>
     </div>
   </div>
 

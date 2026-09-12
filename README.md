@@ -1,6 +1,6 @@
 # Pixel Stocks
 
-A simple **Apple Stocks–style** Progressive Web App: dark, minimal watchlist with prices, % change, sparklines, and a detail chart. Display-only — no login, no brokerage.
+A simple **Apple Stocks–style** Progressive Web App: **light / white** watchlist with prices, % change, sparklines, and a detail chart. Display-only — no login, no brokerage.
 
 **Live (GitHub Pages):** https://chengd-code.github.io/pixel-stocks/
 
@@ -12,17 +12,31 @@ Add or remove symbols in the app; the list is stored in `localStorage`.
 
 ## Market data
 
-| Item | Detail |
-|------|--------|
-| **Source** | [Yahoo Finance](https://finance.yahoo.com) unofficial chart API (`query1.finance.yahoo.com/v8/finance/chart/{SYMBOL}`) |
-| **CORS** | Browsers block direct Yahoo calls. Requests go through free public proxies tried in order: [AllOrigins](https://allorigins.win) (`api.allorigins.win/raw?url=…`), then [corsproxy.io](https://corsproxy.io) |
-| **Cost / keys** | Free only — no paid APIs, no secrets |
-| **Freshness** | Quotes are typically **delayed ~15 minutes**. The UI badge says **Delayed ~15m** — not live brokerage prices |
-| **Rate limits** | Symbols are fetched **sequentially** with a short delay. On failure we keep the last good snapshot in `localStorage` and show a clear banner. If a ticker is invalid/delisted (e.g. some SPACs), that row may stay empty or warn |
+| Mode | When | Source | Freshness (honest) |
+|------|------|--------|--------------------|
+| **Primary** | User pastes a free Finnhub API key in **Settings (⚙)** | [Finnhub](https://finnhub.io) `GET /api/v1/quote` (and candles when allowed) | **Near real-time** for US stocks on the free plan — UI badge: **Near real-time (Finnhub)** |
+| **Fallback** | No key, or Finnhub miss / candle blocked | [Yahoo Finance](https://finance.yahoo.com) unofficial chart API via free CORS proxies ([AllOrigins](https://allorigins.win), [corsproxy.io](https://corsproxy.io)) | **Best-effort / may be delayed** (~15m typical) — UI badge: **Yahoo (best-effort / may be delayed)** |
 
-**Caveat — SPCX:** This ticker may be thinly traded, renamed, or unavailable on Yahoo. If it fails, remove it and add a valid symbol.
+### Finnhub free key (recommended for fresher quotes)
 
-This is **not** financial advice. Data can be wrong, delayed, or missing.
+1. Register at **https://finnhub.io/register** (free tier).
+2. Copy your API key from the Finnhub dashboard.
+3. Open the app → **⚙ Settings** → paste key → **Save** (or **Test** with AAPL first).
+4. The key is stored **only in this browser’s `localStorage`**. It is never committed to the repo or uploaded to our servers.
+
+**Limits (free tier):** ~60 API calls/minute. Quotes for US stocks are near real-time. **`/stock/candle` may be restricted on free** (Finnhub has treated candles as paid); if candles fail, charts automatically fall back to Yahoo history. Sequential fetches + short delays reduce rate-limit risk; clear errors on 429 / bad key.
+
+**No paid APIs** are used or required.
+
+### Caveats
+
+- **SPCX** and other thin / niche tickers may be missing on Finnhub; the app falls back to Yahoo for that symbol when possible.
+- CORS proxies for Yahoo can fail or rate-limit; last good snapshot is kept in `localStorage`.
+- This is **not** financial advice. Data can be wrong, delayed, or missing. We never claim exchange “true real-time” unless the active source actually provides near real-time quotes (Finnhub free US quotes).
+
+## Theme
+
+Clean **light** UI (white / off-white background, dark text, green up / red down), Apple Stocks–inspired, minimal chrome. Detail chart uses light-friendly greens/reds and a subtle baseline.
 
 ## Run locally
 
@@ -48,10 +62,9 @@ On desktop Chrome: address-bar install icon, or Menu → **Install Pixel Stocks�
 
 ## Files
 
-- `index.html` / `styles.css` / `app.js` — UI & logic  
-- `manifest.json` + `sw.js` + `icons/` — PWA install & offline shell  
-- Quotes/charts: Yahoo chart endpoint via CORS proxy (see `app.js`)
+- `index.html` / `styles.css` / `app.js` — UI & logic (Finnhub + Yahoo, Settings, light theme)
+- `manifest.json` + `sw.js` + `icons/` — PWA install & offline shell
 
 ## License
 
-Personal / demo use. Yahoo Finance terms apply to their data; proxies have their own limits.
+Personal / demo use. Finnhub and Yahoo Finance terms apply to their data; proxies have their own limits.
