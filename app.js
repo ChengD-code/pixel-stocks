@@ -15,9 +15,9 @@
   const RANGE_MIGRATE_KEY = 'pixel-stocks-chart-range-v';
   const RANGE_MIGRATE_VER = 4;
   const DEFAULT_RANGE = { range: '1d', interval: '5m', fhRes: '5', fhSpan: '1d' };
-  const BUILD_ID = 'v4-1d-default';
+  const BUILD_ID = 'v5-429-fastfail';
   const REFRESH_MS_FINNHUB = 45_000;
-  const REFRESH_MS_YAHOO = 90_000;
+  const REFRESH_MS_YAHOO = 180_000;
 
   const LABEL_FINNHUB = 'Near real-time (Finnhub)';
   const LABEL_YAHOO = 'Yahoo (best-effort / may be delayed)';
@@ -162,7 +162,7 @@
 
   let preferredProxyIdx = 0;
 
-  async function fetchViaProxy(url, { timeoutMs = 8000 } = {}) {
+  async function fetchViaProxy(url, { timeoutMs = 4500 } = {}) {
     let lastErr;
     const order = [preferredProxyIdx, ...PROXIES.map((_, i) => i).filter((i) => i !== preferredProxyIdx)];
     for (const idx of order) {
@@ -175,15 +175,27 @@
           headers: { Accept: 'application/json' },
         });
         clearTimeout(t);
+        if (res.status === 429) {
+          const err = new Error('Rate limited (429). Showing cached prices — try again in a few minutes.');
+          err.code = 429;
+          throw err;
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const text = await res.text();
         if (!text || text.trim().startsWith('<')) {
           throw new Error('Proxy returned non-JSON');
         }
+        // Yahoo sometimes returns 429 HTML/text through a 200 proxy
+        if (/too many requests|rate.?limit/i.test(text)) {
+          const err = new Error('Rate limited (429). Showing cached prices — try again in a few minutes.');
+          err.code = 429;
+          throw err;
+        }
         preferredProxyIdx = idx;
         return JSON.parse(text);
       } catch (e) {
         clearTimeout(t);
+        if (e && e.code === 429) throw e; // do not burn more proxies when rate-limited
         lastErr = e;
       }
     }
@@ -346,7 +358,7 @@
 
   async function fetchQuoteYahoo(symbol, range = '1d', interval = '5m') {
     const url = YAHOO_CHART(symbol, range, interval);
-    const json = await fetchViaProxy(url);
+    const json = await fetchViaProxy(url, { timeoutMs: 4500 });
     return parseChartPayload(json, symbol);
   }
 
@@ -642,7 +654,8 @@
     }
 
     showBanner('');
-    updatedEl.textContent = 'Updating…';
+    if (!Object.keys(quotes).length) updatedEl.textContent = 'Updating…';
+    else updatedEl.textContent = `Refreshing… (showing ${timeAgo((loadDiskCache()||{}).at || Date.now())} cache)`;
     const failed = [];
     const yahooFallback = [];
     const next = { ...quotes };
@@ -675,7 +688,9 @@
         console.warn('quote failed', sym, e);
         if (e.code === 429) {
           rateLimited = true;
-          showBanner(e.message, 'error');
+          showBanner(e.message || 'Yahoo rate limited — showing cache.', 'warn');
+          if (refreshTimer) clearInterval(refreshTimer);
+          refreshTimer = setInterval(() => refreshQuotes(), 300_000); // 5 min backoff
         }
       }
     });
@@ -952,14 +967,14 @@
   // —— PWA ——
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=4').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=5').then((reg) => {
         reg.update().catch(() => {});
         if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
       }).catch((e) => console.warn('SW failed', e));
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         // New SW claimed — one reload to pick up shell (avoid loops)
-        if (!sessionStorage.getItem('pixel-stocks-reloaded-v4')) {
-          sessionStorage.setItem('pixel-stocks-reloaded-v4', '1');
+        if (!sessionStorage.getItem('pixel-stocks-reloaded-v5')) {
+          sessionStorage.setItem('pixel-stocks-reloaded-v5', '1');
           location.reload();
         }
       });

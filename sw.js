@@ -1,12 +1,12 @@
 /* Pixel Stocks service worker — network-first shell so chart defaults update */
-const CACHE_NAME = 'pixel-stocks-v4';
+const CACHE_NAME = 'pixel-stocks-v5';
 const SHELL = [
   './',
   './index.html',
   './styles.css',
-  './styles.css?v=4',
+  './styles.css?v=5',
   './app.js',
-  './app.js?v=4',
+  './app.js?v=5',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png'
